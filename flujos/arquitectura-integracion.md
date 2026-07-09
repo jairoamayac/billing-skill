@@ -15,30 +15,32 @@ lo que cambia (normativa por país) queda detrás de una interfaz que no cambia.
 
 ## Diagrama C4 — Nivel de componentes
 
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│                    Módulo Facturación (TrustBid backend)               │
-│                                                                        │
-│  ┌──────────────┐   ┌───────────────────┐   ┌──────────────────────┐  │
-│  │ API / UI     │──▶│ InvoiceService    │──▶│ Puerto:              │  │
-│  │ (Controlador │   │ (dominio: gastos, │   │ FiscalAuthorityPort  │  │
-│  │  GRASP)      │   │ emisión, estados) │   │ - submit(doc)        │  │
-│  └──────────────┘   └───────┬───────────┘   │ - verify(id)         │  │
-│                             │               │ - parse(xml/pdf)     │  │
-│        ┌────────────────────┤               └─────────┬────────────┘  │
-│        ▼                    ▼                         ▼                │
-│  ┌───────────┐      ┌──────────────┐   ┌──────────────────────────┐   │
-│  │ Outbox    │      │ OfflineQueue │   │ Adaptadores (Adapter GoF)│   │
-│  │ (eventos) │      │ (campo)      │   │ ┌──────────┐┌──────────┐ │   │
-│  └───────────┘      └──────────────┘   │ │ DianCO   ││ ArcaAR   │ │   │
-│                                        │ │ SOAP/UBL ││ SOAP/CAE │ │   │
-│                                        │ └──────────┘└──────────┘ │   │
-│                                        │ ┌──────────┐┌──────────┐ │   │
-│                                        │ │HaciendaCR││ SefazBR  │ │   │
-│                                        │ │REST/OAuth││ SOAP+REST│ │   │
-│                                        │ └──────────┘└──────────┘ │   │
-│                                        └──────────────────────────┘   │
-└────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Modulo["Módulo Facturación (TrustBid backend)"]
+        API["API / UI<br/>(Controlador GRASP)"]
+        SVC["InvoiceService<br/>(dominio: gastos,<br/>emisión, estados)"]
+        PORT["Puerto:<br/>FiscalAuthorityPort<br/>submit(doc) · verify(id) · parse(xml/pdf)"]
+        OUT["Outbox<br/>(eventos)"]
+        OFF["OfflineQueue<br/>(campo)"]
+
+        subgraph ADAP["Adaptadores (Adapter GoF)"]
+            CO["DianCO<br/>SOAP/UBL"]
+            AR["ArcaAR<br/>SOAP/CAE"]
+            CR["HaciendaCR<br/>REST/OAuth"]
+            BR["SefazBR<br/>SOAP+REST"]
+        end
+
+        API --> SVC --> PORT
+        SVC --> OUT
+        SVC --> OFF
+        PORT --> ADAP
+    end
+
+    CO --> DIAN[("DIAN")]
+    AR --> ARCA[("ARCA")]
+    CR --> HAC[("Hacienda/DGT")]
+    BR --> SEFAZ[("SEFAZ / ADN")]
 ```
 
 ## Patrones aplicados y por qué
@@ -54,6 +56,27 @@ lo que cambia (normativa por país) queda detrás de una interfaz que no cambia.
 | **Saga (coreografía corta)** | Ciclo emisión → autorización → entrega al cliente → acuse | En CR la validación es asíncrona (polling) y en CO hay que armar el AttachedDocument tras el ApplicationResponse; cada paso tiene compensación (nota de crédito / anulación) |
 | **State (GoF)** | Ciclo de vida del comprobante | Estados: `BORRADOR → FIRMADO → EN_COLA → ENVIADO → AUTORIZADO / RECHAZADO → ENTREGADO → ACUSADO` (+ `CONTINGENCIA_PENDIENTE`). Las transiciones válidas difieren por país |
 | **Facade (GoF)** | `InvoicingFacade` hacia el resto de TrustBid | El pipeline de gastos no conoce UBL ni SOAP; pide `validateExpense(doc)` y recibe un veredicto |
+
+## Ciclo de vida del comprobante (patrón State)
+
+Las transiciones válidas difieren por país (p. ej. CR pasa por polling asíncrono; CO
+arma el AttachedDocument tras el acuse). El diagrama muestra el flujo canónico.
+
+```mermaid
+stateDiagram-v2
+    [*] --> BORRADOR
+    BORRADOR --> FIRMADO: sign()
+    FIRMADO --> EN_COLA: outbox
+    EN_COLA --> ENVIADO: submit()
+    EN_COLA --> CONTINGENCIA_PENDIENTE: autoridad caída / sin red
+    CONTINGENCIA_PENDIENTE --> ENVIADO: reconexión + regularización
+    ENVIADO --> AUTORIZADO: acuse OK
+    ENVIADO --> RECHAZADO: error de validación
+    RECHAZADO --> BORRADOR: corregir y reemitir
+    AUTORIZADO --> ENTREGADO: envío al receptor
+    ENTREGADO --> ACUSADO: mensaje de receptor (CR) / evento
+    ACUSADO --> [*]
+```
 
 ## Contratos de los puertos (interfaz estable)
 

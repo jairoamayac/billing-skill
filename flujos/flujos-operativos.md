@@ -7,39 +7,19 @@ referencia del país correspondiente.
 
 Objetivo: impedir que una factura falsa o alterada se apruebe como gasto.
 
-```
-Recepción (email/upload/OCR móvil)
-   │
-   ▼
-1. Detectar tipo de archivo
-   ├─ XML → parsear directo (siempre preferido)
-   └─ PDF/imagen → OCR + decodificar QR
-   │
-   ▼
-2. Identificar país y tipo de documento
-   ├─ CO: raíz <AttachedDocument> o <Invoice> UBL → extraer CUFE (cbc:UUID)
-   ├─ AR: QR https://www.arca.gob.ar/fe/qr/?p={Base64 JSON} → CAE, CUIT, importe
-   ├─ CR: <Clave> de 50 chars (empieza por 506)
-   └─ BR: chave de 44 dígitos (DANFE barcode/QR) + modelo (55/65/NFS-e)
-   │
-   ▼
-3. Validación estructural local
-   ├─ CO: XSD DIAN + recomputar CUFE (SHA-384) si se tiene la clave técnica
-   ├─ AR: balance impTotal = neto + IVA + tributos; JSON del QR vs texto OCR
-   ├─ CR: dígitos de la clave (fecha, cédula, situación) + coherencia totales (5 dec.)
-   └─ BR: Módulo 11 del cDV; coherencia CFOP/CST/NCM
-   │
-   ▼
-4. Verificación contra la autoridad (online, obligatoria antes de aprobar)
-   ├─ CO: GET catalogo-vpfe.dian.gov.co/document/searchqr?documentkey={CUFE}
-   ├─ AR: Constatación de Comprobantes (arca.gob.ar)
-   ├─ CR: GET /recepcion/v1/recepcion/{clave} → ind-estado == "aceptado"
-   └─ BR: portal NF-e (nacional) / SEFAZ estatal (NFC-e) / nfse.gov.br (servicios)
-   │
-   ▼
-5. Cross-check: ID único + emisor + total del documento == respuesta autoridad
-   ├─ OK → gasto APROBABLE (persistir evidencia: XML + respuesta de la autoridad)
-   └─ Discrepancia o estado inválido → RECHAZAR gasto + alerta de auditoría
+```mermaid
+flowchart TD
+    R["Recepción<br/>(email / upload / OCR móvil)"] --> T{Tipo de archivo}
+    T -->|XML| P["Parsear directo<br/>(siempre preferido)"]
+    T -->|PDF / imagen| O["OCR + decodificar QR"]
+    P --> ID
+    O --> ID
+    ID["Identificar país y tipo de documento<br/>CO: AttachedDocument/Invoice → CUFE ·<br/>AR: QR Base64-JSON → CAE ·<br/>CR: Clave 50 (506…) ·<br/>BR: chave 44 + modelo"] --> V
+    V["Validación estructural local<br/>CO: XSD + recomputar CUFE ·<br/>AR: balance + QR vs OCR ·<br/>CR: dígitos clave + totales ·<br/>BR: Módulo 11 + CFOP/CST/NCM"] --> A
+    A["Verificación contra la autoridad<br/>(online, obligatoria)<br/>CO: catalogo-vpfe · AR: constatación ·<br/>CR: GET /recepcion/clave · BR: portal NF-e/SEFAZ/NFS-e"] --> X
+    X{"Cross-check:<br/>ID + emisor + total<br/>== respuesta autoridad?"}
+    X -->|Coincide y estado válido| OK["✅ Gasto APROBABLE<br/>persistir XML + respuesta autoridad"]
+    X -->|Discrepancia o estado inválido| NO["❌ RECHAZAR gasto<br/>+ alerta de auditoría"]
 ```
 
 Reglas duras:
@@ -52,39 +32,19 @@ Reglas duras:
 
 ## Flujo 2 — Emisión de factura propia
 
-```
-Solicitud de emisión (venta/servicio del tenant)
-   │
-   ▼
-1. Resolver contexto fiscal del tenant y del receptor
-   (país, régimen, condición IVA/exoneración del cliente → tipo de comprobante)
-   ├─ AR: matriz condición emisor × receptor → Clase A/B/C/E/M (RG 5616: condición
-   │      IVA del receptor es obligatoria)
-   ├─ CR: ¿receptor exonerado? → exigir resolución EXONET vigente → bloque <Exoneracion>
-   ├─ CO: escenario (CustomizationID) + resolución de numeración vigente
-   └─ BR: ¿mercancía o servicio? → NF-e/NFC-e (SEFAZ) o NFS-e (ADN); CFOP/CST/NCM
-   │
-   ▼
-2. Construir documento (Builder por país) + asignar consecutivo transaccional
-   │
-   ▼
-3. Firmar (SignerPort) — siempre antes de encolar
-   │
-   ▼
-4. Outbox → adaptador del país → autoridad
-   ├─ Sync (CO/AR/BR): respuesta inmediata AUTORIZADO/RECHAZADO
-   └─ Async (CR, NFS-e BR): 201 + polling hasta estado final
-   │
-   ▼
-5. Post-autorización
-   ├─ CO: construir AttachedDocument (factura + ApplicationResponse) → zip → email
-   ├─ AR: PDF con CAE + QR Base64 → email
-   ├─ CR: enviar PDF + XML firmado + XML respuesta de Hacienda al receptor
-   └─ BR: DANFE/DANFSE con protocolo de autorización
-   │
-   ▼
-6. Rechazo → corregir y reemitir (BR: mismo nNF; AR: mismo nro si no consumió CAE);
-   ajustes posteriores → Nota Crédito/Débito referenciando el documento original
+```mermaid
+flowchart TD
+    S["Solicitud de emisión<br/>(venta / servicio del tenant)"] --> C
+    C["1. Resolver contexto fiscal del emisor y receptor → tipo de comprobante<br/>AR: matriz condición × receptor → Clase A/B/C/E/M ·<br/>CR: ¿exonerado? → EXONET → bloque Exoneracion ·<br/>CO: CustomizationID + numeración vigente ·<br/>BR: mercancía→NF-e/NFC-e o servicio→NFS-e"] --> B
+    B["2. Construir documento (Builder por país)<br/>+ asignar consecutivo transaccional"] --> F
+    F["3. Firmar (SignerPort)<br/>— siempre antes de encolar —"] --> Q
+    Q["4. Outbox → adaptador del país → autoridad"] --> M{Modo de validación}
+    M -->|Sync CO/AR/BR| RES{Resultado}
+    M -->|Async CR, NFS-e BR| POLL["201 + polling"] --> RES
+    RES -->|AUTORIZADO| POST
+    RES -->|RECHAZADO| REJ["Corregir y reemitir<br/>BR: mismo nNF · AR: mismo nro si no consumió CAE"]
+    REJ --> B
+    POST["5. Post-autorización<br/>CO: AttachedDocument → zip → email ·<br/>AR: PDF con CAE+QR ·<br/>CR: PDF + XML firmado + XML respuesta ·<br/>BR: DANFE/DANFSE con protocolo"] --> ADJ["Ajustes posteriores →<br/>Nota Crédito/Débito referenciando el original"]
 ```
 
 ## Flujo 3 — Operación en campo con conectividad intermitente
@@ -93,29 +53,11 @@ Principio común: **un dispositivo = una identidad de numeración exclusiva** (P
 Sucursal+Terminal en CR, série en BR, prefijo/rango en CO). Nunca compartir secuencias
 entre terminales offline.
 
-```
-ANTES de salir a campo (online, sincronización matutina)
-   ├─ AR: descargar CAEA de la quincena (solicitable 5 días antes) → SQLite cifrado
-   ├─ BR: certificado A1 + CSC cargados en el dispositivo
-   ├─ CR: .p12 + PIN cargados; catálogo CAByS actualizado
-   └─ Común: catálogos (clientes, tarifas, tipo de cambio) y rangos de numeración
-   │
-   ▼
-EN CAMPO sin señal
-   ├─ AR: emitir con CAEA (tipoCodAut="A"), consecutivo local, PDF+QR, térmica BT
-   ├─ CR: clave con Situación=3, firmar local (nunca diferir), ticket provisional
-   │      con leyenda de contingencia
-   ├─ BR: NFC-e offline firmada local con CSC en QR; NF-e → EPEC (tpEmis=4) si hay
-   │      internet mínimo, SVC (6/7) si cayó la SEFAZ
-   └─ CO: factura de contingencia (InvoiceTypeCode=03)
-   │
-   ▼
-AL RECUPERAR CONEXIÓN (cola offline → outbox → autoridad)
-   ├─ AR: reportar comprobantes CAEA ≤ 8 días corridos tras fin de quincena
-   │      (+ declarar PV CAEA sin uso); si no → ARCA suspende CAEA futuros
-   ├─ CR: transmitir ≤ 48 h desde que volvió la conexión
-   ├─ BR: NFC-e ≤ 24 h (el retraso se tipifica como evasión); EPEC: XML completo ≤ 168 h
-   └─ Común: monitorear deadline legal por comprobante y alertar antes de vencer
+```mermaid
+flowchart TD
+    A["🔵 ANTES de salir (online, sincronización matutina)<br/>AR: descargar CAEA de la quincena → SQLite cifrado ·<br/>BR: certificado A1 + CSC en el dispositivo ·<br/>CR: .p12 + PIN + catálogo CAByS ·<br/>Común: catálogos + rangos de numeración"] --> B
+    B["🟠 EN CAMPO sin señal (emisión local)<br/>AR: CAEA (tipoCodAut=A), consecutivo local, PDF+QR ·<br/>CR: clave Situación=3, firmar local, ticket provisional ·<br/>BR: NFC-e offline con CSC; NF-e → EPEC (tpEmis=4) o SVC (6/7) ·<br/>CO: contingencia (InvoiceTypeCode=03)"] --> C
+    C["🟢 AL RECONECTAR (cola offline → outbox → autoridad)<br/>AR: reportar CAEA ≤ 8 días tras fin de quincena (+ PV sin uso) ·<br/>CR: transmitir ≤ 48 h ·<br/>BR: NFC-e ≤ 24 h · EPEC ≤ 168 h ·<br/>Común: monitorear deadline legal y alertar antes de vencer"]
 ```
 
 ### Traslado de materiales (cuadrillas)
@@ -135,22 +77,13 @@ AL RECUPERAR CONEXIÓN (cola offline → outbox → autoridad)
 
 Clasificar SIEMPRE el ingreso antes de decidir si se factura:
 
-```
-Ingreso de la ONG
-   ├─ Donación / cuota de afiliación / aporte institucional
-   │     → NO se factura en ningún país
-   │     ├─ CO: certificado de donación (rep. legal + revisor fiscal; Ley 2380/2024)
-   │     ├─ AR: recibo de donación no fiscal (respaldo: certificado de exención ARCA)
-   │     ├─ CR: recibo interno; la exoneración de IVA en COMPRAS va vía EXONET
-   │     └─ BR: recibo; inmunidad art. 150 VI "c" CF/88
-   │
-   └─ Venta de bien o servicio (libros, seminarios, consultorías…)
-         → SÍ se factura electrónicamente:
-         ├─ CO: factura con validación previa (régimen tributario especial no exime)
-         ├─ AR: Clase C con CAE (condición IVA Exento)
-         ├─ CR: factura normal; si el CLIENTE es el exonerado, bloque <Exoneracion>
-         └─ BR: NF-e/NFS-e con CST 40/41 (ICMS), CST 08 (PIS/COFINS),
-                ExigibilidadeISS=2/3 + cita legal en infAdic
+```mermaid
+flowchart TD
+    I["Ingreso de la ONG"] --> T{Naturaleza del ingreso}
+    T -->|Donación / cuota / aporte institucional| D["🚫 NO se factura en ningún país"]
+    D --> DN["CO: certificado de donación (rep. legal + revisor fiscal; Ley 2380/2024) ·<br/>AR: recibo no fiscal (respaldo: certificado de exención ARCA) ·<br/>CR: recibo interno (exoneración de IVA en COMPRAS vía EXONET) ·<br/>BR: recibo; inmunidad art. 150 VI 'c' CF/88"]
+    T -->|Venta de bien o servicio<br/>libros, seminarios, consultorías| V["🧾 SÍ se factura electrónicamente"]
+    V --> VN["CO: factura con validación previa (el régimen especial no exime) ·<br/>AR: Clase C con CAE (condición IVA Exento) ·<br/>CR: factura normal; si el CLIENTE es exonerado → bloque Exoneracion ·<br/>BR: NF-e/NFS-e con CST 40/41 · CST 08 PIS/COFINS · ExigibilidadeISS 2/3"]
 ```
 
 Egresos de la ONG en campo (proveedores informales):
