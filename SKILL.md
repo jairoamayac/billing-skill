@@ -24,6 +24,9 @@ offline con sincronización diferida).
    lee [flujos/arquitectura-integracion.md](flujos/arquitectura-integracion.md) primero.
 3. **Si la tarea es operativa** (validar un gasto, flujo ONG, contingencia sin internet,
    cuadrillas en campo), lee [flujos/flujos-operativos.md](flujos/flujos-operativos.md).
+4. **Si la tarea es de onboarding/habilitación** (qué trámites, certificados o
+   credenciales necesita un tenant nuevo antes de poder facturar en un país), lee
+   [flujos/requisitos-habilitacion.md](flujos/requisitos-habilitacion.md).
 
 ## Mapa comparativo rápido
 
